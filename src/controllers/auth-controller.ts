@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+import { authView } from '../views/auth.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { UserModel } from '../models/user.ts';
 
@@ -16,20 +18,6 @@ const html = (
   });
   response.end(body);
 };
-
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    character =>
-      ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;',
-      })[character]!,
-  );
-}
 
 function parseCookies(request: IncomingMessage): Record<string, string> {
   const header = request.headers.cookie ?? '';
@@ -80,90 +68,6 @@ async function readLoginForm(
   return new URLSearchParams(body);
 }
 
-function loginView(error = ''): string {
-  return `<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Iniciar sesión · ENTRA</title>
-  <link rel="icon" type="image/svg+xml" href="/brand/entra-isotipo.svg">
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body>
-  <div class="app-shell">
-    <header class="masthead">
-      <a class="masthead__brand" href="/login" aria-label="ENTRA">
-        <img
-          src="/brand/entra-logo-vertical.svg"
-          alt="ENTRA"
-          width="2000"
-          height="2200"
-        >
-      </a>
-    </header>
-
-    <main class="workspace">
-      <section class="heading">
-        <div>
-          <p class="eyebrow">ESTUDIO DE COLABORACIÓN</p>
-          <h1>Iniciar sesión</h1>
-          <p class="muted">
-            Accede a tus proyectos musicales.
-          </p>
-        </div>
-      </section>
-
-      ${
-        error
-          ? `<p class="notice notice--error" role="alert">${escapeHtml(error)}</p>`
-          : ''
-      }
-
-      <form class="project-form" method="post" action="/login">
-        <div class="project-form__grid">
-          <label class="field field--wide">
-            Usuario
-            <input
-              name="username"
-              type="text"
-              required
-              autocomplete="username"
-              maxlength="80"
-              placeholder="Ingresa tu usuario"
-            >
-          </label>
-
-          <label class="field field--wide">
-            Contraseña
-            <input
-              name="password"
-              type="password"
-              required
-              autocomplete="current-password"
-              maxlength="120"
-              placeholder="Ingresa tu contraseña"
-            >
-          </label>
-        </div>
-
-        <div class="project-form__actions">
-          <button class="button button--primary" type="submit">
-            Iniciar sesión
-          </button>
-        </div>
-      </form>
-    </main>
-
-    <footer class="app-footer">
-      <span>Hecho para hacer música.</span>
-      <span>ENTRA / Estudio de colaboración</span>
-    </footer>
-  </div>
-</body>
-</html>`;
-}
-
 export async function authController(
   request: IncomingMessage,
   response: ServerResponse,
@@ -173,6 +77,39 @@ export async function authController(
   const path = url.pathname;
   const method = request.method;
 
+  if (method === 'GET' && path === '/register') {
+    const token = randomBytes(32).toString('hex');
+    response.setHeader('Set-Cookie', `entra_register_csrf=${token}; HttpOnly; Path=/register; SameSite=Strict; Max-Age=1800`);
+    return html(response, authView('', true, '', token));
+  }
+
+  if (method === 'POST' && path === '/register') {
+    let username = '';
+    const token = parseCookies(request).entra_register_csrf ?? '';
+    try {
+      const fields = await readLoginForm(request);
+      if (!token || fields.get('csrf') !== token) {
+        return html(response, authView('Abre de nuevo Crear una cuenta para continuar.', true), 403);
+      }
+      username = (fields.get('username') ?? '').trim();
+      const password = fields.get('password') ?? '';
+      let error = '';
+      if (!/^[A-Za-z0-9_]{3,40}$/.test(username)) error = 'El usuario debe tener entre 3 y 40 letras, números o guion bajo.';
+      else if (password.length < 8 || password.length > 64) error = 'La contraseña debe tener entre 8 y 64 caracteres.';
+      else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^A-Za-z0-9\s]/.test(password)) error = 'Incluye al menos una mayúscula, una minúscula, un número y un símbolo.';
+      else if (password !== fields.get('confirmPassword')) error = 'Las contraseñas no coinciden.';
+      if (error) return html(response, authView(error, true, username, token), 422);
+      if (!userModel.register(username, password)) {
+        return html(response, authView('Ese usuario ya existe. Elige otro o inicia sesión.', true, username, token), 409);
+      }
+      response.setHeader('Set-Cookie', 'entra_register_csrf=; HttpOnly; Path=/register; SameSite=Strict; Max-Age=0');
+      return redirect(response, '/login?registered=1');
+    } catch (error) {
+      console.error(error);
+      return html(response, authView('No pudimos procesar el registro. Revisa el formulario e inténtalo de nuevo.', true, username, token), 400);
+    }
+  }
+
   if (method === 'GET' && path === '/login') {
     const cookies = parseCookies(request);
     const sessionId = cookies.entra_session;
@@ -181,7 +118,7 @@ export async function authController(
       return redirect(response, '/projects');
     }
 
-    return html(response, loginView());
+    return html(response, authView('', false, '', '', url.searchParams.get('registered') === '1'));
   }
 
   if (method === 'POST' && path === '/login') {
@@ -194,7 +131,7 @@ export async function authController(
       if (!username || !password) {
         return html(
           response,
-          loginView('Ingresa el usuario y la contraseña.'),
+          authView('Ingresa el usuario y la contraseña.'),
           422,
         );
       }
@@ -202,7 +139,7 @@ export async function authController(
       if (!userModel.authenticate(username, password)) {
         return html(
           response,
-          loginView('Usuario o contraseña incorrectos.'),
+          authView('Usuario o contraseña incorrectos.'),
           401,
         );
       }
@@ -212,7 +149,7 @@ export async function authController(
       if (!session) {
         return html(
           response,
-          loginView('No se pudo crear la sesión.'),
+          authView('No se pudo crear la sesión.'),
           500,
         );
       }
@@ -228,7 +165,7 @@ export async function authController(
 
       return html(
         response,
-        loginView('No pudimos procesar el inicio de sesión.'),
+        authView('No pudimos procesar el inicio de sesión.'),
         400,
       );
     }

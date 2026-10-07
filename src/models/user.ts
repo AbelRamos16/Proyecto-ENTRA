@@ -102,6 +102,13 @@ export class UserModel {
     return verifyPassword(password, user.passwordHash);
   }
 
+  register(username: string, password: string): boolean {
+    const result = this.db.prepare(
+      'INSERT INTO users (username, passwordHash, createdAt) VALUES (?, ?, ?) ON CONFLICT(username) DO NOTHING',
+    ).run(username, hashPassword(password), new Date().toISOString());
+    return result.changes === 1;
+  }
+
   createSession(username: string): AuthSession | undefined {
     const user = this.db
       .prepare(

@@ -147,7 +147,7 @@ export function createApp(
   const server = createServer(async (request, response) => {
     response.setHeader(
       'Content-Security-Policy',
-      "default-src 'none'; img-src 'self'; font-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; img-src 'self'; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     );
 
     response.setHeader(
@@ -165,6 +165,17 @@ export function createApp(
         request.url ?? '/',
         'http://localhost',
       );
+
+      if (request.method === 'GET' && url.pathname === '/password-feedback.js') {
+        response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        response.end(stripTypeScriptTypes(readFileSync(new URL('./client/password-feedback.ts', import.meta.url), 'utf8')));
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/project-audio.js') {
+        response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        response.end(stripTypeScriptTypes(readFileSync(new URL('./client/project-audio.ts', import.meta.url), 'utf8')));
+        return;
+      }
 
       /*
        * Recursos públicos
@@ -237,6 +248,7 @@ export function createApp(
 
       if (
         url.pathname === '/login' ||
+        url.pathname === '/register' ||
         url.pathname === '/logout'
       ) {
         await authController(
