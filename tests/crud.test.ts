@@ -1,60 +1,109 @@
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+
 import { createApp } from '../src/server.ts';
-import { ProjectModel } from '../src/models/project.ts';
+import { supabaseAdmin } from '../src/config/supabase.ts';
+import { cleanupTemporaryUser } from './helpers/supabase-test-cleanup.ts';
+
+const TEST_PASSWORD = 'TestPass123!';
 
 test('CRUD HTTP, validación, escape HTML, CSRF y persistencia', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'entra-test-'));
-  const path = join(directory, 'test.sqlite');
+  const uniqueId = randomUUID().replaceAll('-', '').slice(0, 16);
+  const username = `crud_${uniqueId}`;
+  const email = `crud_${uniqueId}@example.com`;
 
-  const { server, model, userModel } = createApp(path);
+  let userId: string | undefined;
+  let serverStarted = false;
 
-  await new Promise<void>(resolve =>
-    server.listen(0, '127.0.0.1', resolve),
-  );
-
-  const address = server.address();
-
-  assert.ok(address && typeof address !== 'string');
-
-  const base = `http://127.0.0.1:${address.port}`;
+  const { server, model } = createApp();
 
   try {
-    /*
-     * Iniciar sesión antes de acceder al CRUD.
-     */
+    // Crear un usuario temporal de prueba en Supabase Auth.
+    const { data: createdUser, error: createUserError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email,
+        password: TEST_PASSWORD,
+        email_confirm: true,
+        user_metadata: {
+          username,
+          display_name: username,
+        },
+      });
+
+    if (createUserError) {
+      throw new Error(
+        `No se pudo crear el usuario temporal: ${createUserError.message}`,
+      );
+    }
+
+    assert.ok(createdUser.user);
+    userId = createdUser.user.id;
+
+    // Comprobar que el trigger creó el perfil asociado.
+    const { data: profile, error: profileError } =
+      await supabaseAdmin
+        .from('profiles')
+        .select('id, username, role')
+        .eq('id', userId)
+        .single();
+
+    if (profileError) {
+      throw new Error(
+        `No se pudo consultar el perfil temporal: ${profileError.message}`,
+      );
+    }
+
+    assert.equal(profile.username, username);
+    assert.equal(profile.role, 'user');
+
+    // Iniciar el servidor HTTP.
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    serverStarted = true;
+
+    const address = server.address();
+
+    assert.ok(address && typeof address !== 'string');
+
+    const base = `http://127.0.0.1:${address.port}`;
+
+    // Iniciar sesión con el usuario temporal.
     const loginResponse = await fetch(`${base}/login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: new URLSearchParams({
-        username: 'example',
-        password: '1234',
+        username,
+        password: TEST_PASSWORD,
       }),
       redirect: 'manual',
     });
 
     assert.equal(loginResponse.status, 303);
+    assert.equal(loginResponse.headers.get('location'), '/projects');
 
-    const setCookie = loginResponse.headers.getSetCookie();
+    const setCookies = loginResponse.headers.getSetCookie();
+    const sessionCookie = setCookies.find((cookie) =>
+      cookie.startsWith('entra_session='),
+    );
 
-    assert.ok(setCookie.length > 0);
+    assert.ok(sessionCookie, 'El inicio de sesión debe crear una cookie');
 
-    const sessionCookie = setCookie[0].split(';')[0];
+    const cookiePair = sessionCookie.split(';')[0];
 
-    /*
-     * Helper para realizar peticiones autenticadas.
-     */
+    // Helper para peticiones autenticadas.
     const authenticatedFetch = (
       route: string,
       options: RequestInit = {},
     ) => {
       const headers = new Headers(options.headers);
-      headers.set('Cookie', sessionCookie);
+      headers.set('Cookie', cookiePair);
 
       return fetch(`${base}${route}`, {
         ...options,
@@ -62,40 +111,39 @@ test('CRUD HTTP, validación, escape HTML, CSRF y persistencia', async () => {
       });
     };
 
-    const initial = await (
-      await authenticatedFetch('/projects')
-    ).text();
+    const initialResponse = await authenticatedFetch('/projects');
+    assert.equal(initialResponse.status, 200);
 
-    assert.match(
-      initial,
-      /src="\/brand\/entra-logo-vertical.svg"/,
-    );
+    const initial = await initialResponse.text();
 
+    assert.match(initial, /entra-logo-vertical\.svg/);
+    assert.match(initial, /Aún no hay proyectos/);
+
+    // Verificar que los recursos estáticos continúan disponibles.
     const logo = await fetch(
       `${base}/brand/entra-logo-vertical.svg`,
     );
 
     assert.equal(logo.status, 200);
-
     assert.equal(
       logo.headers.get('content-type'),
       'image/svg+xml',
     );
 
-    assert.equal(
-      (
-        await fetch(
-          `${base}/brand/entra-isotipo.svg`,
-        )
-      ).status,
-      200,
+    const isotipo = await fetch(
+      `${base}/brand/entra-isotipo.svg`,
     );
 
-    assert.match(initial, /Aún no hay proyectos/);
+    assert.equal(isotipo.status, 200);
 
-    const token = initial.match(
+    // Obtener el token CSRF del formulario.
+    const tokenMatch = initial.match(
       /name="pageToken" value="([^"]+)"/,
-    )![1];
+    );
+
+    assert.ok(tokenMatch, 'Debe existir un token CSRF en la página');
+
+    const token = tokenMatch[1];
 
     const fields = new URLSearchParams({
       csrf: token,
@@ -110,126 +158,145 @@ test('CRUD HTTP, validación, escape HTML, CSRF y persistencia', async () => {
 
     const post = (
       route: string,
-      body = fields,
+      body: URLSearchParams = fields,
     ) =>
       authenticatedFetch(route, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
         body,
         redirect: 'manual',
       });
 
+    const testUser = {
+      id: userId,
+      username,
+      role: 'user',
+    };
+
+    // Rechazar un token CSRF incorrecto.
+    const invalidCsrfFields = new URLSearchParams(fields);
+    invalidCsrfFields.set('csrf', 'incorrecto');
+
     assert.equal(
-      (
-        await post(
-          '/projects',
-          new URLSearchParams({
-            ...Object.fromEntries(fields),
-            csrf: 'incorrecto',
-          }),
-        )
-      ).status,
+      (await post('/projects', invalidCsrfFields)).status,
       403,
     );
 
+    // Rechazar un BPM fuera del rango permitido.
+    const invalidBpmFields = new URLSearchParams(fields);
+    invalidBpmFields.set('bpm', '999');
+
     assert.equal(
-      (
-        await post(
-          '/projects',
-          new URLSearchParams({
-            ...Object.fromEntries(fields),
-            bpm: '999',
-          }),
-        )
-      ).status,
+      (await post('/projects', invalidBpmFields)).status,
       422,
     );
 
-    assert.equal(model.list().length, 0);
+    // La validación fallida no debe crear proyectos.
+    const emptyProjects = await model.list(testUser);
+    assert.equal(emptyProjects.length, 0);
 
+    // Crear un proyecto válido.
     assert.equal(
       (await post('/projects')).status,
       303,
     );
 
-    const id = model.list()[0].id;
+    const projectsAfterCreate = await model.list(testUser);
 
-    const detail = await (
-      await authenticatedFetch(`/projects/${id}`)
-    ).text();
+    assert.equal(projectsAfterCreate.length, 1);
+
+    const projectId = projectsAfterCreate[0].id;
+
+    // El detalle debe escapar HTML y no ejecutar scripts.
+    const detailResponse = await authenticatedFetch(
+      `/projects/${projectId}`,
+    );
+
+    assert.equal(detailResponse.status, 200);
+
+    const detail = await detailResponse.text();
 
     assert.match(detail, /&lt;script&gt;/);
-
     assert.doesNotMatch(detail, /<script>/);
 
-    fields.set(
-      'title',
-      'Ciudad de madrugada',
-    );
+    // Actualizar el proyecto.
+    fields.set('title', 'Ciudad de madrugada');
 
     assert.equal(
-      (
-        await post(`/projects/${id}/edit`)
-      ).status,
+      (await post(`/projects/${projectId}/edit`)).status,
       303,
     );
 
-    assert.equal(
-      model.find(id)?.title,
-      'Ciudad de madrugada',
+    const updatedProject = await model.find(projectId, testUser);
+
+    assert.equal(updatedProject?.title, 'Ciudad de madrugada');
+
+    // Comprobar que el cambio se conserva al consultar Supabase.
+    const { data: persistedProject, error: persistedError } =
+      await supabaseAdmin
+        .from('projects')
+        .select('id, title, owner_id')
+        .eq('id', projectId)
+        .eq('owner_id', userId)
+        .single();
+
+    if (persistedError) {
+      throw new Error(
+        `No se pudo verificar la persistencia: ${persistedError.message}`,
+      );
+    }
+
+    assert.equal(persistedProject.title, 'Ciudad de madrugada');
+    assert.equal(persistedProject.owner_id, userId);
+
+    // La confirmación de eliminación debe mostrarse primero.
+    const deletePage = await authenticatedFetch(
+      `/projects/${projectId}/delete`,
     );
 
-    const second = new ProjectModel(path);
+    assert.equal(deletePage.status, 200);
 
+    // La eliminación requiere POST y un token CSRF válido.
     assert.equal(
-      second.find(id)?.title,
-      'Ciudad de madrugada',
-    );
-
-    second.db.close();
-
-    assert.equal(
-      (
-        await authenticatedFetch(
-          `/projects/${id}/delete`,
-        )
-      ).status,
-      200,
-    );
-
-    assert.ok(model.find(id));
-
-    assert.equal(
-      (
-        await post(
-          `/projects/${id}/delete`,
-        )
-      ).status,
+      (await post(`/projects/${projectId}/delete`)).status,
       303,
     );
 
-    assert.equal(
-      (
-        await authenticatedFetch(
-          `/projects/${id}`,
-        )
-      ).status,
-      404,
+    // El proyecto eliminado deja de estar disponible.
+    const deletedResponse = await authenticatedFetch(
+      `/projects/${projectId}`,
     );
 
-    assert.equal(model.list().length, 0);
+    assert.equal(deletedResponse.status, 404);
+
+    const remainingProjects = await model.list(testUser);
+    assert.equal(remainingProjects.length, 0);
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close(error =>
-        error ? reject(error) : resolve(),
-      ),
-    );
+    // Cerrar el servidor, incluso si una aserción falla.
+    if (serverStarted) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
 
-    model.db.close();
-    userModel.close();
-
-    rmSync(directory, {
-      recursive: true,
-      force: true,
-    });
+    // Limpiar exclusivamente el usuario temporal de esta prueba.
+    if (userId) {
+      try {
+        await cleanupTemporaryUser(userId);
+      } catch (error) {
+        console.error(
+          'No se pudo limpiar el usuario temporal del test CRUD:',
+          error,
+        );
+      }
+    }
   }
 });

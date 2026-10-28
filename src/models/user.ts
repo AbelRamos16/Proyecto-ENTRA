@@ -1,185 +1,278 @@
-import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+
+import { createHash, randomBytes } from 'node:crypto';
+import { supabaseAdmin, supabaseAuth } from '../config/supabase.ts';
+
+export type AuthUser = {
+  id: string;
+  username: string;
+  role: string;
+};
 
 export type AuthSession = {
   id: string;
-  userId: number;
+  userId: string;
   username: string;
+  role: string;
   csrfToken: string;
+};
+
+type ProfileRow = {
+  id: string;
+  username: string;
+  role: string;
+  display_name: string | null;
 };
 
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
 
-function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 64).toString('hex');
-
-  return `${salt}:${hash}`;
+function hashSessionId(sessionId: string): string {
+  return createHash('sha256').update(sessionId).digest('hex');
 }
 
-function verifyPassword(password: string, storedHash: string): boolean {
-  const [salt, hash] = storedHash.split(':');
-
-  if (!salt || !hash) {
-    return false;
+function throwIfError(error: { message: string } | null): void {
+  if (error) {
+    throw new Error(`Error de Supabase: ${error.message}`);
   }
-
-  const storedBuffer = Buffer.from(hash, 'hex');
-  const derivedBuffer = scryptSync(password, salt, 64);
-
-  if (storedBuffer.length !== derivedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(storedBuffer, derivedBuffer);
 }
 
 export class UserModel {
-  private db: DatabaseSync;
+  async authenticate(
+    username: string,
+    password: string,
+  ): Promise<AuthUser | undefined> {
+    const normalizedUsername = username.trim();
 
-  constructor(path: string) {
-    if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
-    }
-
-    this.db = new DatabaseSync(path);
-
-    this.db.exec(`
-      PRAGMA foreign_keys = ON;
-
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        passwordHash TEXT NOT NULL,
-        createdAt TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        userId INTEGER NOT NULL,
-        csrfToken TEXT NOT NULL,
-        expiresAt INTEGER NOT NULL,
-        FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-      );
-    `);
-
-    this.createDevelopmentUser();
-  }
-
-  private createDevelopmentUser(): void {
-    const existingUser = this.db
-      .prepare('SELECT id FROM users WHERE username = ?')
-      .get('example') as { id: number } | undefined;
-
-    if (existingUser) {
-      return;
-    }
-
-    this.db
-      .prepare(
-        'INSERT INTO users (username, passwordHash, createdAt) VALUES (?, ?, ?)',
-      )
-      .run(
-        'example',
-        hashPassword('1234'),
-        new Date().toISOString(),
-      );
-  }
-
-  authenticate(username: string, password: string): boolean {
-    const user = this.db
-      .prepare(
-        'SELECT passwordHash FROM users WHERE username = ?',
-      )
-      .get(username) as { passwordHash: string } | undefined;
-
-    if (!user) {
-      return false;
-    }
-
-    return verifyPassword(password, user.passwordHash);
-  }
-
-  register(username: string, password: string): boolean {
-    const result = this.db.prepare(
-      'INSERT INTO users (username, passwordHash, createdAt) VALUES (?, ?, ?) ON CONFLICT(username) DO NOTHING',
-    ).run(username, hashPassword(password), new Date().toISOString());
-    return result.changes === 1;
-  }
-
-  createSession(username: string): AuthSession | undefined {
-    const user = this.db
-      .prepare(
-        'SELECT id, username FROM users WHERE username = ?',
-      )
-      .get(username) as
-      | { id: number; username: string }
-      | undefined;
-
-    if (!user) {
+    if (!normalizedUsername || !password) {
       return undefined;
     }
 
-    this.removeExpiredSessions();
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, username, role')
+      .eq('username', normalizedUsername)
+      .maybeSingle();
 
-    const sessionId = randomBytes(32).toString('hex');
-    const csrfToken = randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + SESSION_DURATION_MS;
-
-    this.db
-      .prepare(
-        'INSERT INTO sessions (id, userId, csrfToken, expiresAt) VALUES (?, ?, ?, ?)',
-      )
-      .run(
-        sessionId,
-        user.id,
-        csrfToken,
-        expiresAt,
+    if (profileError) {
+      throw new Error(
+        `No se pudo consultar el usuario: ${profileError.message}`,
       );
+    }
+
+    if (!profile) {
+      return undefined;
+    }
+
+    const { data: authUser, error: authUserError } =
+      await supabaseAdmin.auth.admin.getUserById(profile.id);
+
+    if (authUserError || !authUser.user?.email) {
+      return undefined;
+    }
+
+    const { data: signInData, error: signInError } =
+      await supabaseAuth.auth.signInWithPassword({
+        email: authUser.user.email,
+        password,
+      });
+
+    if (signInError || !signInData.user) {
+      return undefined;
+    }
 
     return {
-      id: sessionId,
+      id: profile.id,
+      username: profile.username,
+      role: profile.role,
+    };
+  }
+
+  async register(
+    username: string,
+    email: string,
+    password: string,
+  ): Promise<boolean> {
+    const normalizedUsername = username.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const { data: existingUsername, error: usernameError } =
+      await supabaseAdmin
+        .from('profiles')
+        .select('id')
+        .eq('username', normalizedUsername)
+        .maybeSingle();
+
+    throwIfError(usernameError);
+
+    if (existingUsername) {
+      return false;
+    }
+
+    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+      email: normalizedEmail,
+      password,
+      email_confirm: true,
+      user_metadata: {
+        username: normalizedUsername,
+        display_name: normalizedUsername,
+      },
+    });
+
+    if (error) {
+      if (
+        /already registered|already exists|duplicate key|unique constraint/i.test(
+          error.message,
+        )
+      ) {
+        return false;
+      }
+
+      throw new Error(`No se pudo registrar el usuario: ${error.message}`);
+    }
+
+    if (!data.user) {
+      throw new Error('Supabase no devolvió el usuario creado.');
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, username, role')
+      .eq('id', data.user.id)
+      .maybeSingle();
+
+    if (profileError || !profile) {
+      // Evitar dejar una cuenta Auth huérfana si no se creó el perfil.
+      const { error: cleanupError } =
+        await supabaseAdmin.auth.admin.deleteUser(data.user.id);
+
+      if (cleanupError) {
+        console.error(
+          'No se pudo limpiar la cuenta Auth incompleta:',
+          cleanupError.message,
+        );
+      }
+
+      throw new Error(
+        `No se pudo confirmar el perfil del usuario: ${
+          profileError?.message ?? 'el trigger no creó el perfil'
+        }`,
+      );
+    }
+
+    return true;
+  }
+
+  async createSession(user: AuthUser): Promise<AuthSession> {
+    const id = randomBytes(32).toString('base64url');
+    const csrfToken = randomBytes(32).toString('hex');
+
+    const expiresAt = new Date(
+      Date.now() + SESSION_DURATION_MS,
+    ).toISOString();
+
+    const { error } = await supabaseAdmin
+      .from('app_sessions')
+      .insert({
+        session_id_hash: hashSessionId(id),
+        user_id: user.id,
+        csrf_token: csrfToken,
+        expires_at: expiresAt,
+      });
+
+    throwIfError(error);
+
+    return {
+      id,
       userId: user.id,
       username: user.username,
+      role: user.role,
       csrfToken,
     };
   }
 
-  getSession(sessionId: string): AuthSession | undefined {
-    this.removeExpiredSessions();
+  async getSession(sessionId: string): Promise<AuthSession | undefined> {
+    if (!sessionId) {
+      return undefined;
+    }
 
-    const session = this.db
-      .prepare(`
-        SELECT
-          sessions.id,
-          sessions.userId,
-          users.username,
-          sessions.csrfToken
-        FROM sessions
-        INNER JOIN users ON users.id = sessions.userId
-        WHERE sessions.id = ?
-          AND sessions.expiresAt > ?
-      `)
-      .get(sessionId, Date.now()) as AuthSession | undefined;
+    const sessionHash = hashSessionId(sessionId);
 
-    return session;
+    const { data: session, error: sessionError } = await supabaseAdmin
+      .from('app_sessions')
+      .select('user_id, csrf_token, expires_at')
+      .eq('session_id_hash', sessionHash)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle();
+
+    if (sessionError) {
+      throw new Error(
+        `No se pudo consultar la sesión: ${sessionError.message}`,
+      );
+    }
+
+    if (!session) {
+      // La sesión no existe o ya expiró.
+      // Si el registro aún existe, intentamos limpiarlo.
+      const { error: deleteError } = await supabaseAdmin
+        .from('app_sessions')
+        .delete()
+        .eq('session_id_hash', sessionHash);
+
+      if (deleteError) {
+        throw new Error(
+          `No se pudo limpiar la sesión caducada: ${deleteError.message}`,
+        );
+      }
+
+      return undefined;
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, username, role')
+      .eq('id', session.user_id)
+      .maybeSingle();
+
+    if (profileError) {
+      throw new Error(
+        `No se pudo consultar el perfil: ${profileError.message}`,
+      );
+    }
+
+    if (!profile) {
+      // Sin perfil válido, la sesión no debe seguir siendo utilizable.
+      const { error: deleteError } = await supabaseAdmin
+        .from('app_sessions')
+        .delete()
+        .eq('session_id_hash', sessionHash);
+
+      if (deleteError) {
+        throw new Error(
+          `No se pudo eliminar la sesión sin perfil: ${deleteError.message}`,
+        );
+      }
+
+      return undefined;
+    }
+
+    return {
+      id: sessionId,
+      userId: profile.id,
+      username: profile.username,
+      role: profile.role,
+      csrfToken: session.csrf_token,
+    };
   }
 
-  deleteSession(sessionId: string): void {
-    this.db
-      .prepare('DELETE FROM sessions WHERE id = ?')
-      .run(sessionId);
-  }
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
 
-  private removeExpiredSessions(): void {
-    this.db
-      .prepare('DELETE FROM sessions WHERE expiresAt <= ?')
-      .run(Date.now());
+    const { error } = await supabaseAdmin
+      .from('app_sessions')
+      .delete()
+      .eq('session_id_hash', hashSessionId(sessionId));
+
+    throwIfError(error);
   }
-  
-  close(): void {
-  this.db.close();
-}
 }

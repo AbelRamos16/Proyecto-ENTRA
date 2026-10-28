@@ -1,3 +1,4 @@
+
 function escapeHtml(value: string): string {
   return value.replace(
     /[&<>"']/g,
@@ -12,8 +13,16 @@ function escapeHtml(value: string): string {
   );
 }
 
-export function authView(error = '', register = false, username = '', token = '', registered = false): string {
+export function authView(
+  error = '',
+  register = false,
+  username = '',
+  token = '',
+  registered = false,
+  email = '',
+): string {
   const title = register ? 'Crear cuenta' : 'Iniciar sesión';
+
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -42,7 +51,9 @@ export function authView(error = '', register = false, username = '', token = ''
           <p class="eyebrow">ESTUDIO DE COLABORACIÓN</p>
           <h1>${title}</h1>
           <p class="muted">
-            ${register ? 'Tu próxima colaboración empieza aquí.' : 'Accede a tus proyectos musicales.'}
+            ${register
+              ? 'Tu próxima colaboración empieza aquí.'
+              : 'Accede a tus proyectos musicales.'}
           </p>
         </div>
       </section>
@@ -53,7 +64,23 @@ export function authView(error = '', register = false, username = '', token = ''
           : ''
       }
 
-      ${registered ? '<p class="notice" role="status">Cuenta creada. Ya puedes iniciar sesión.</p>' : ''}<form class="project-form" method="post" action="${register ? '/register' : '/login'}">${register ? `<input type="hidden" name="csrf" value="${escapeHtml(token)}">` : ''}
+      ${
+        registered
+          ? '<p class="notice" role="status">Cuenta creada. Ya puedes iniciar sesión.</p>'
+          : ''
+      }
+
+      <form
+        class="project-form"
+        method="post"
+        action="${register ? '/register' : '/login'}"
+      >
+        <input
+          type="hidden"
+          name="csrf"
+          value="${escapeHtml(token)}"
+        >
+
         <div class="project-form__grid">
           <label class="field field--wide">
             Usuario
@@ -62,27 +89,91 @@ export function authView(error = '', register = false, username = '', token = ''
               type="text"
               required
               autocomplete="username"
-              maxlength="40" value="${escapeHtml(username)}" ${register ? 'minlength="3" pattern="[A-Za-z0-9_]{3,40}"' : ''}
+              maxlength="40"
+              value="${escapeHtml(username)}"
+              ${register ? 'minlength="3" pattern="[A-Za-z0-9_]{3,40}"' : ''}
               placeholder="Ingresa tu usuario"
             >
           </label>
 
+          ${
+            register
+              ? `<label class="field field--wide">
+                  Correo electrónico
+                  <input
+                    name="email"
+                    type="email"
+                    required
+                    autocomplete="email"
+                    maxlength="254"
+                    value="${escapeHtml(email)}"
+                    placeholder="ejemplo@correo.com"
+                  >
+                </label>`
+              : ''
+          }
+
           <label class="field field--wide">
             Contraseña
             <input
-              name="password" ${register ? 'data-register-password aria-describedby="password-feedback"' : ''}
+              name="password"
+              ${
+                register
+                  ? 'data-register-password aria-describedby="password-feedback"'
+                  : ''
+              }
               type="password"
               required
-              autocomplete="${register ? 'new-password' : 'current-password'}" ${register ? 'minlength="8"' : ''}
+              autocomplete="${register ? 'new-password' : 'current-password'}"
+              ${register ? 'minlength="8"' : ''}
               maxlength="${register ? 64 : 120}"
               placeholder="Ingresa tu contraseña"
             >
           </label>
-          ${register ? `<ul class="password-feedback" id="password-feedback" data-password-feedback hidden><li class="password-feedback__item" data-rule="length"><span data-indicator aria-hidden="true">○</span><span><span class="password-feedback__state" data-rule-state>Falta: </span>8–64 caracteres</span></li><li class="password-feedback__item" data-rule="uppercase"><span data-indicator aria-hidden="true">○</span><span><span class="password-feedback__state" data-rule-state>Falta: </span>Una mayúscula</span></li><li class="password-feedback__item" data-rule="lowercase"><span data-indicator aria-hidden="true">○</span><span><span class="password-feedback__state" data-rule-state>Falta: </span>Una minúscula</span></li><li class="password-feedback__item" data-rule="number"><span data-indicator aria-hidden="true">○</span><span><span class="password-feedback__state" data-rule-state>Falta: </span>Un número</span></li><li class="password-feedback__item" data-rule="symbol"><span data-indicator aria-hidden="true">○</span><span><span class="password-feedback__state" data-rule-state>Falta: </span>Un símbolo</span></li></ul>` : ''}
-          ${register ? `<label class="field field--wide">
-            Confirmar contraseña
-            <input name="confirmPassword" type="password" required minlength="8" maxlength="${register ? 64 : 120}" autocomplete="new-password" placeholder="Repite tu contraseña">
-          </label>` : ''}
+
+          ${
+            register
+              ? `<ul class="password-feedback" id="password-feedback" data-password-feedback hidden>
+                  <li class="password-feedback__item" data-rule="length">
+                    <span data-indicator aria-hidden="true">○</span>
+                    <span><span class="password-feedback__state" data-rule-state>Falta: </span>8–64 caracteres</span>
+                  </li>
+                  <li class="password-feedback__item" data-rule="uppercase">
+                    <span data-indicator aria-hidden="true">○</span>
+                    <span><span class="password-feedback__state" data-rule-state>Falta: </span>Una mayúscula</span>
+                  </li>
+                  <li class="password-feedback__item" data-rule="lowercase">
+                    <span data-indicator aria-hidden="true">○</span>
+                    <span><span class="password-feedback__state" data-rule-state>Falta: </span>Una minúscula</span>
+                  </li>
+                  <li class="password-feedback__item" data-rule="number">
+                    <span data-indicator aria-hidden="true">○</span>
+                    <span><span class="password-feedback__state" data-rule-state>Falta: </span>Un número</span>
+                  </li>
+                  <li class="password-feedback__item" data-rule="symbol">
+                    <span data-indicator aria-hidden="true">○</span>
+                    <span><span class="password-feedback__state" data-rule-state>Falta: </span>Un símbolo</span>
+                  </li>
+                </ul>`
+              : ''
+          }
+
+          ${
+            register
+              ? `<label class="field field--wide">
+                  Confirmar contraseña
+                  <input
+                    name="confirmPassword"
+                    type="password"
+                    required
+                    minlength="8"
+                    maxlength="64"
+                    autocomplete="new-password"
+                    placeholder="Repite tu contraseña"
+                  >
+                </label>`
+              : ''
+          }
         </div>
 
         <div class="project-form__actions">
@@ -90,7 +181,15 @@ export function authView(error = '', register = false, username = '', token = ''
             ${title}
           </button>
         </div>
-      </form><p class="auth-switch">${register ? '¿Ya tienes cuenta? <a href="/login">Iniciar sesión</a>' : '¿Eres nuevo? <a href="/register">Crear una cuenta</a>'}</p>
+      </form>
+
+      <p class="auth-switch">
+        ${
+          register
+            ? '¿Ya tienes cuenta? <a href="/login">Iniciar sesión</a>'
+            : '¿Eres nuevo? <a href="/register">Crear una cuenta</a>'
+        }
+      </p>
     </main>
 
     <footer class="app-footer">
@@ -98,10 +197,8 @@ export function authView(error = '', register = false, username = '', token = ''
       <span>ENTRA / Estudio de colaboración</span>
     </footer>
   </div>
-${register ? '<script type="module" src="/password-feedback.js"></script>' : ''}
+
+  ${register ? '<script type="module" src="/password-feedback.js"></script>' : ''}
 </body>
 </html>`;
 }
-
-
-
