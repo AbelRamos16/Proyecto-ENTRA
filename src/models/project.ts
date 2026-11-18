@@ -2,6 +2,7 @@
 import { supabaseAdmin } from '../config/supabase.ts';
 import type { AuthUser } from './user.ts';
 import type { ProjectAudio } from './audio.ts';
+import { requirePublishable } from './publication.ts';
 
 export const genres = [
   'Alternativo',
@@ -20,6 +21,9 @@ export const statuses = [
 ];
 
 export type ProjectInput = {
+  genreId?: number | null;
+  instrumentId?: number | null;
+  collaborationId?: number | null;
   title: string;
   genre: string;
   bpm: number;
@@ -34,6 +38,8 @@ export type ProjectInput = {
 
 export type Project = Omit<ProjectInput, 'audio'> & {
   id: number;
+  publicationStatus?: 'draft' | 'published';
+  publishedAt?: string | null;
   ownerId: string;
   updatedAt: string;
   audioName: string | null;
@@ -41,6 +47,11 @@ export type Project = Omit<ProjectInput, 'audio'> & {
 };
 
 type ProjectRow = {
+  publication_status: 'draft' | 'published';
+  published_at: string | null;
+  genre_id: number | null;
+  instrument_id: number | null;
+  collaboration_id: number | null;
   id: number;
   owner_id: string;
   title: string;
@@ -86,6 +97,7 @@ function parseOptionalNumber(
 
 export function validateProject(
   fields: URLSearchParams,
+  allowedGenres: string[] = genres,
 ): ProjectInput {
   const title = (fields.get('title') ?? '').trim();
   const genre = (fields.get('genre') ?? '').trim();
@@ -101,7 +113,7 @@ export function validateProject(
     );
   }
 
-  if (!genres.includes(genre)) {
+  if (!allowedGenres.includes(genre)) {
     throw new ValidationError('Selecciona un género musical válido.');
   }
 
@@ -176,9 +188,11 @@ export function validateProject(
 }
 
 function throwIfError(
-  error: { message: string } | null,
+  error: { message: string; code?: string } | null,
   action: string,
 ): void {
+  if (error?.code === '23514' && /publicar|publicado|hook|demo/i.test(error.message)) throw new ValidationError(error.message);
+  if (error && ['23514', '23503'].includes(error.code ?? '')) throw new ValidationError('Las opciones del catálogo cambiaron. Revisa tus selecciones antes de guardar.');
   if (error) {
     throw new Error(`${action}: ${error.message}`);
   }
@@ -187,6 +201,11 @@ function throwIfError(
 function mapProject(row: ProjectRow): Project {
   return {
     id: Number(row.id),
+    publicationStatus: row.publication_status ?? 'draft',
+    publishedAt: row.published_at,
+    genreId: row.genre_id,
+    instrumentId: row.instrument_id,
+    collaborationId: row.collaboration_id,
     ownerId: row.owner_id,
     title: row.title,
     genre: row.genre,
@@ -241,16 +260,18 @@ function decodeBytea(
 
 export class ProjectModel {
   // Consulta los proyectos del usuario o todos si es superadmin.
-  async list(user: AuthUser): Promise<Project[]> {
+  async list(user: AuthUser, ownerId?: string): Promise<Project[]> {
     let query = supabaseAdmin
       .from('projects')
       .select(
-        'id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
+        'publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
       )
       .order('updated_at', { ascending: false });
 
     if (!isSuperadmin(user)) {
       query = query.eq('owner_id', user.id);
+    } else if (ownerId) {
+      query = query.eq('owner_id', ownerId);
     }
 
     const { data, error } = await query;
@@ -272,7 +293,7 @@ export class ProjectModel {
     let query = supabaseAdmin
       .from('projects')
       .select(
-        'id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
+        'publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
       )
       .eq('id', id);
 
@@ -327,6 +348,10 @@ export class ProjectModel {
 
     const row = {
       owner_id: user.id,
+      publication_status: 'draft',
+      genre_id: project.genreId ?? null,
+      instrument_id: project.instrumentId ?? null,
+      collaboration_id: project.collaborationId ?? null,
       title: project.title,
       genre: project.genre,
       bpm: project.bpm,
@@ -371,6 +396,9 @@ export class ProjectModel {
     }
 
     const changes: Record<string, unknown> = {
+      genre_id: project.genreId ?? null,
+      instrument_id: project.instrumentId ?? null,
+      collaboration_id: project.collaborationId ?? null,
       title: project.title,
       genre: project.genre,
       bpm: project.bpm,
@@ -402,6 +430,18 @@ export class ProjectModel {
 
     throwIfError(error, 'No se pudo actualizar el proyecto');
 
+    return (data?.length ?? 0) > 0;
+  }
+
+  // Cambia la visibilidad sin transferir la autoría.
+  async setPublication(id: number, published: boolean, user: AuthUser): Promise<boolean> {
+    const project = await this.find(id, user);
+    if (!project) return false;
+    if (published) requirePublishable(project);
+    let query = supabaseAdmin.from('projects').update({ publication_status: published ? 'published' : 'draft', updated_at: new Date().toISOString() }).eq('id', id);
+    if (!isSuperadmin(user)) query = query.eq('owner_id', user.id);
+    const { data, error } = await query.select('id');
+    throwIfError(error, 'No se pudo cambiar la publicación');
     return (data?.length ?? 0) > 0;
   }
 

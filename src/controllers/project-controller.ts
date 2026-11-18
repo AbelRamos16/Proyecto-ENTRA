@@ -1,3 +1,6 @@
+import { publicationView } from '../views/publication.ts';
+import { sendAudio } from './audio-response.ts';
+import { CatalogModel, resolveSelection } from '../models/catalog.ts';
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -143,35 +146,39 @@ export async function projectController(
   model: ProjectModel,
   token: string,
   user: AuthUser,
+  catalogs: CatalogModel = new CatalogModel(),
+  basePath = '/projects',
 ): Promise<void> {
   const path = url.pathname;
   const method = request.method;
 
   // Redirige la página principal.
   if (method === 'GET' && path === '/') {
-    return redirect(response, '/projects');
+    return redirect(response, '/feed');
   }
 
   // Lista los proyectos visibles para el usuario.
   if (method === 'GET' && path === '/projects') {
     const messages: Record<string, string> = {
-      created: 'Proyecto creado. Tu idea ya tiene un lugar.',
+      created: 'Borrador guardado. Tu proyecto sigue privado hasta que lo publiques.',
+      published: 'Publicado en Descubrir. Tu hook ya puede escucharse.',
+      unpublished: 'Retirado del feed. El proyecto se conserva como borrador.',
       updated: 'Cambios guardados.',
       deleted: 'Proyecto eliminado.',
     };
 
-    const projects = await model.list(user);
+    const projects = await model.list(user, user.id);
     const result = url.searchParams.get('result') ?? '';
 
     return html(
       response,
-      listView(projects, token, messages[result] ?? ''),
+      listView(projects, token, messages[result] ?? '', user.role),
     );
   }
 
   // Muestra el formulario de creación.
   if (method === 'GET' && path === '/projects/new') {
-    return html(response, formView(token));
+    return html(response, formView(token, undefined, '', undefined, await catalogs.list(), basePath, user.role));
   }
 
   // Ruta de reproducción del audio de un proyecto.
@@ -192,95 +199,13 @@ export async function projectController(
       return html(response, 'Audio no encontrado', 404);
     }
 
-    const rangeHeader = request.headers.range;
-    const range = rangeHeader
-      ? rangeHeader.match(/^bytes=(\d*)-(\d*)$/)
-      : null;
-
-    // Un encabezado Range inválido no se puede procesar.
-    if (rangeHeader && !range) {
-      response.writeHead(416, {
-        'Content-Range': `bytes */${bytes.length}`,
-      });
-      response.end();
-      return;
-    }
-
-    let start = 0;
-    let end = bytes.length - 1;
-
-    if (range) {
-      // No se admiten rangos múltiples ni rangos sin límites.
-      if (!range[1] && !range[2]) {
-        response.writeHead(416, {
-          'Content-Range': `bytes */${bytes.length}`,
-        });
-        response.end();
-        return;
-      }
-
-      // Permite solicitar los últimos N bytes.
-      if (!range[1]) {
-        const suffixLength = Number(range[2]);
-
-        if (
-          !Number.isSafeInteger(suffixLength) ||
-          suffixLength <= 0
-        ) {
-          response.writeHead(416, {
-            'Content-Range': `bytes */${bytes.length}`,
-          });
-          response.end();
-          return;
-        }
-
-        start = Math.max(0, bytes.length - suffixLength);
-      } else {
-        start = Number(range[1]);
-
-        if (range[2]) {
-          end = Number(range[2]);
-        }
-      }
-
-      if (
-        !Number.isSafeInteger(start) ||
-        !Number.isSafeInteger(end) ||
-        start < 0 ||
-        start >= bytes.length ||
-        end < start
-      ) {
-        response.writeHead(416, {
-          'Content-Range': `bytes */${bytes.length}`,
-        });
-        response.end();
-        return;
-      }
-
-      end = Math.min(end, bytes.length - 1);
-    }
-
-    const partial = Boolean(range);
-    const content = bytes.subarray(start, end + 1);
-
-    response.writeHead(partial ? 206 : 200, {
-      'Content-Type': 'audio/mpeg',
-      'Accept-Ranges': 'bytes',
-      'Content-Length': content.length,
-      ...(partial
-        ? {
-            'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
-          }
-        : {}),
-    });
-
-    response.end(Buffer.from(content));
+    sendAudio(request, response, bytes);
     return;
   }
 
   // Rutas de detalle, edición y eliminación.
   const match = path.match(
-    /^\/projects\/([1-9]\d*)(?:\/(edit|delete))?$/,
+    /^\/projects\/([1-9]\d*)(?:\/(edit|delete|publish|unpublish))?$/,
   );
 
   const id = match ? Number(match[1]) : undefined;
@@ -313,15 +238,17 @@ export async function projectController(
 
   // Presenta el detalle, el formulario de edición o la confirmación.
   if (method === 'GET' && project && match) {
+    if (match[2] === 'publish') return html(response, publicationView(project, token, basePath, user.role));
+    if (match[2] === 'unpublish') return html(response, 'Usa el botón Retirar del feed.', 405);
     if (match[2] === 'delete') {
-      return html(response, deleteView(project, token));
+      return html(response, deleteView(project, token, basePath, user.role));
     }
 
     if (match[2] === 'edit') {
-      return html(response, formView(token, project));
+      return html(response, formView(token, project, '', undefined, await catalogs.list(), basePath, user.role));
     }
 
-    return html(response, detailView(project, token));
+    return html(response, detailView(project, token, basePath, user.role));
   }
 
   const isCreate =
@@ -350,6 +277,12 @@ export async function projectController(
         );
       }
 
+      if (project && (match?.[2] === 'publish' || match?.[2] === 'unpublish')) {
+        const published = match[2] === 'publish';
+        if (!await model.setPublication(project.id, published, user)) return html(response, 'Proyecto no encontrado', 404);
+        return redirect(response, basePath + '?result=' + (published ? 'published' : 'unpublished'));
+      }
+
       // Elimina el proyecto después de validar el formulario y CSRF.
       if (project && match?.[2] === 'delete') {
         const deleted = await model.delete(project.id, user);
@@ -358,7 +291,7 @@ export async function projectController(
           return html(response, 'Proyecto no encontrado', 404);
         }
 
-        return redirect(response, '/projects?result=deleted');
+        return redirect(response, basePath + '?result=deleted');
       }
 
       // Solo se permite crear o editar mediante las rutas previstas.
@@ -369,7 +302,13 @@ export async function projectController(
         return html(response, 'Página no encontrada', 404);
       }
 
-      const input = validateProject(fields);
+      const selection = resolveSelection(await catalogs.list(), fields);
+      fields.set('genre', selection.genre.name);
+      fields.set('need', selection.collaboration.name + ' · ' + selection.instrument.name);
+      const input = validateProject(fields, [selection.genre.name]);
+      input.genreId = selection.genre.id;
+      input.instrumentId = selection.instrument.id;
+      input.collaborationId = selection.collaboration.id;
 
       input.audio = parsed.file
         ? await validateAudio(parsed.file)
@@ -421,13 +360,14 @@ export async function projectController(
 
       return redirect(
         response,
-        `/projects?result=${project ? 'updated' : 'created'}`,
+        `${basePath}?result=${project ? 'updated' : 'created'}`,
       );
     } catch (error) {
       if (error instanceof ValidationError) {
+        if (project && (match?.[2] === 'publish' || match?.[2] === 'unpublish')) return html(response, publicationView(project, token, basePath, user.role, error.message), 422);
         return html(
           response,
-          formView(token, project, error.message, fields),
+          formView(token, project, error.message, fields, await catalogs.list(), basePath, user.role),
           422,
         );
       }

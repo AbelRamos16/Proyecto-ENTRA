@@ -1,352 +1,80 @@
-
+import { FeedModel } from './models/feed.ts';
+import { feedController } from './controllers/feed-controller.ts';
+import { CatalogModel } from './models/catalog.ts';
+import express from 'express';
+import type { ErrorRequestHandler } from 'express';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
-
 import { ProjectModel } from './models/project.ts';
 import { UserModel } from './models/user.ts';
-import {
-  projectController,
-  html,
-} from './controllers/project-controller.ts';
+import { AdminModel } from './models/admin.ts';
+import { adminController } from './controllers/admin-controller.ts';
+import { projectController, html } from './controllers/project-controller.ts';
 import { authController } from './controllers/auth-controller.ts';
-
-function parseCookies(
-  cookieHeader: string | undefined,
-): Record<string, string> {
-  const cookies: Record<string, string> = {};
-
-  if (!cookieHeader) {
-    return cookies;
-  }
-
-  for (const part of cookieHeader.split(';')) {
-    const separator = part.indexOf('=');
-
-    if (separator === -1) {
-      continue;
-    }
-
-    const name = part.slice(0, separator).trim();
-    const value = part.slice(separator + 1).trim();
-
-    if (!name) {
-      continue;
-    }
-
-    try {
-      cookies[name] = decodeURIComponent(value);
-    } catch {
-      // Ignora cookies mal formadas.
-    }
-  }
-
-  return cookies;
+function sessionCookie(header = '') {
+  const part = header.split(';').map(s => s.trim()).find(s => s.startsWith('entra_session='));
+  try { return part ? decodeURIComponent(part.slice('entra_session='.length)) : undefined; }
+  catch { return undefined; }
 }
-
-export function createApp() {
-  // Ambos modelos trabajan con Supabase.
-  const model = new ProjectModel();
-  const userModel = new UserModel();
-
-  // Recursos estáticos de la interfaz.
-  const assets = new Map<
-    string,
-    { type: string; body: Buffer }
-  >([
-    [
-      '/fonts/anton-latin-400-normal.woff2',
-      {
-        type: 'font/woff2',
-        body: readFileSync(
-          new URL(
-            '../public/fonts/anton-latin-400-normal.woff2',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-    [
-      '/brand/entra-logo-vertical.svg',
-      {
-        type: 'image/svg+xml',
-        body: readFileSync(
-          new URL(
-            '../public/brand/entra-logo-vertical.svg',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-    [
-      '/fonts/watchout-demo.ttf',
-      {
-        type: 'font/ttf',
-        body: readFileSync(
-          new URL(
-            '../public/fonts/watchout-demo.ttf',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-    [
-      '/brand/entra-logo-vertical.png',
-      {
-        type: 'image/png',
-        body: readFileSync(
-          new URL(
-            '../public/brand/entra-logo-vertical.png',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-    [
-      '/brand/entra-isotipo.svg',
-      {
-        type: 'image/svg+xml',
-        body: readFileSync(
-          new URL(
-            '../public/brand/entra-isotipo.svg',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-    [
-      '/art/entra-studio.png',
-      {
-        type: 'image/png',
-        body: readFileSync(
-          new URL(
-            '../public/art/entra-studio.png',
-            import.meta.url,
-          ),
-        ),
-      },
-    ],
-  ]);
-
-  // Fuentes adicionales.
-  for (const name of [
-    'lilita-one-latin-400-normal.woff2',
-    'barlow-condensed-latin-600-normal.woff2',
-    'ibm-plex-sans-latin-400-normal.woff2',
-    'ibm-plex-sans-latin-600-normal.woff2',
-  ]) {
-    assets.set(`/fonts/${name}`, {
-      type: 'font/woff2',
-      body: readFileSync(
-        new URL(`../public/fonts/${name}`, import.meta.url),
-      ),
+export function createApp(deps: { model?: ProjectModel; userModel?: UserModel; adminModel?: AdminModel; catalogModel?: CatalogModel; feedModel?: FeedModel } = {}) {
+  const feedModel = deps.feedModel ?? new FeedModel();
+  const model = deps.model ?? new ProjectModel();
+  const userModel = deps.userModel ?? new UserModel();
+  const catalogModel = deps.catalogModel ?? new CatalogModel();
+  const adminModel = deps.adminModel ?? new AdminModel();
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use((_req, res, next) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+    res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Cache-Control', 'no-store'); next();
+  });
+  app.get('/health', (_req, res) => { res.json({ status: 'ok' }); });
+  for (const name of ['onboarding', 'password-feedback', 'project-audio', 'catalog-selects', 'feed']) {
+    app.get(`/${name}.js`, (_req, res) => {
+      res.type('text/javascript').send(stripTypeScriptTypes(readFileSync(new URL(`./client/${name}.ts`, import.meta.url), 'utf8')));
     });
   }
-
-  const server = createServer(async (request, response) => {
-    // Cabeceras de seguridad.
-    response.setHeader(
-      'Content-Security-Policy',
-      "default-src 'none'; img-src 'self'; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    );
-
-    response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.setHeader('Cache-Control', 'no-store');
-
-    try {
-      const url = new URL(
-        request.url ?? '/',
-        'http://localhost',
-      );
-
-      // Scripts públicos utilizados por la interfaz.
-      if (
-        request.method === 'GET' &&
-        url.pathname === '/password-feedback.js'
-      ) {
-        response.writeHead(200, {
-          'Content-Type': 'text/javascript; charset=utf-8',
-        });
-
-        response.end(
-          stripTypeScriptTypes(
-            readFileSync(
-              new URL(
-                './client/password-feedback.ts',
-                import.meta.url,
-              ),
-              'utf8',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      if (
-        request.method === 'GET' &&
-        url.pathname === '/project-audio.js'
-      ) {
-        response.writeHead(200, {
-          'Content-Type': 'text/javascript; charset=utf-8',
-        });
-
-        response.end(
-          stripTypeScriptTypes(
-            readFileSync(
-              new URL(
-                './client/project-audio.ts',
-                import.meta.url,
-              ),
-              'utf8',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      if (
-        request.method === 'GET' &&
-        url.pathname === '/onboarding.js'
-      ) {
-        response.writeHead(200, {
-          'Content-Type': 'text/javascript; charset=utf-8',
-        });
-
-        response.end(
-          stripTypeScriptTypes(
-            readFileSync(
-              new URL('./client/onboarding.ts', import.meta.url),
-              'utf8',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      // Archivos estáticos: imágenes y fuentes.
-      const asset = assets.get(url.pathname);
-
-      if (request.method === 'GET' && asset) {
-        response.writeHead(200, {
-          'Content-Type': asset.type,
-        });
-
-        response.end(asset.body);
-        return;
-      }
-
-      // Hoja de estilos.
-      if (
-        request.method === 'GET' &&
-        url.pathname === '/styles.css'
-      ) {
-        response.writeHead(200, {
-          'Content-Type': 'text/css; charset=utf-8',
-        });
-
-        response.end(
-          readFileSync(
-            new URL('../public/styles.css', import.meta.url),
-          ),
-        );
-
-        return;
-      }
-
-      // Rutas públicas de autenticación.
-      if (
-        url.pathname === '/login' ||
-        url.pathname === '/register' ||
-        url.pathname === '/logout'
-      ) {
-        await authController(
-          request,
-          response,
-          url,
-          userModel,
-        );
-
-        return;
-      }
-
-      // Las demás rutas requieren una sesión válida.
-      const cookies = parseCookies(request.headers.cookie);
-      const sessionId = cookies.entra_session;
-
-      if (!sessionId) {
-        response.writeHead(303, {
-          Location: '/login',
-        });
-
-        response.end();
-        return;
-      }
-
-      // getSession es asíncrono porque consulta Supabase.
-      const session = await userModel.getSession(sessionId);
-
-      if (!session) {
-        response.writeHead(303, {
-          Location: '/login',
-          'Set-Cookie':
-            'entra_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
-        });
-
-        response.end();
-        return;
-      }
-
-      // El usuario se obtiene de la sesión validada.
-      const user = {
-        id: session.userId,
-        username: session.username,
-        role: session.role,
-      };
-
-      // El controlador de proyectos también es asíncrono.
-      await projectController(
-        request,
-        response,
-        url,
-        model,
-        session.csrfToken,
-        user,
-      );
-    } catch (error) {
-      console.error('Error al procesar la solicitud:', error);
-
-      if (!response.headersSent) {
-        html(
-          response,
-          '<h1>No pudimos completar la solicitud.</h1><a href="/login">Volver al Login</a>',
-          500,
-        );
-      } else if (!response.writableEnded) {
-        response.end();
-      }
+  app.use(express.static(fileURLToPath(new URL('../public', import.meta.url)), { dotfiles: 'deny', index: false }));
+  // Cada controlador lee el stream con límites; un parser global consumiría el multipart.
+  app.all(['/login', '/register', '/logout'], async (req, res) => {
+    await authController(req, res, new URL(req.originalUrl, 'http://localhost'), userModel);
+  });
+  app.use(async (req, res, next) => {
+    const id = sessionCookie(req.headers.cookie);
+    const session = id ? await userModel.getSession(id) : undefined;
+    if (!session) {
+      if (id) res.clearCookie('entra_session', { path: '/', httpOnly: true, sameSite: 'lax' });
+      res.redirect(303, '/login'); return;
     }
+    res.locals.session = session;
+    res.locals.user = { id: session.userId, username: session.username, role: session.role };
+    next();
   });
-
-  return {
-    server,
-    model,
-    userModel,
+  app.use('/feed', async (req, res) => {
+    await feedController(req, res, new URL(req.originalUrl, 'http://localhost'), feedModel, res.locals.user, res.locals.session.csrfToken);
+  });
+  app.use('/admin', async (req, res) => {
+    if (res.locals.user.role !== 'superadmin') { res.status(403).send('Acceso exclusivo del administrador.'); return; }
+    await adminController(req, res, new URL(req.originalUrl, 'http://localhost'), adminModel, res.locals.user, res.locals.session.csrfToken, model, catalogModel);
+  });
+  app.use(async (req, res) => {
+    await projectController(req, res, new URL(req.originalUrl, 'http://localhost'), model, res.locals.session.csrfToken, res.locals.user, catalogModel);
+  });
+  const errors: ErrorRequestHandler = (err, _req, res, _next) => {
+    console.error('Error de aplicación:', err instanceof Error ? err.message : 'Error desconocido');
+    if (!res.headersSent) html(res, '<h1>No pudimos completar la solicitud.</h1><a href="/projects">Volver</a>', 500);
+    else res.end();
   };
+  app.use(errors);
+  return { app, server: createServer(app), model, userModel };
 }
+const application = createApp();
+export default application.app;
 
-// Inicia el servidor únicamente cuando este archivo se ejecuta directamente.
-if (
-  process.argv[1] &&
-  fileURLToPath(import.meta.url) === process.argv[1]
-) {
-  const port = Number(process.env.PORT ?? 3000);
-  const { server } = createApp();
-
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`ENTRA: http://127.0.0.1:${port}/login`);
-  });
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const host = process.env.HOST ?? '127.0.0.1'; const port = Number(process.env.PORT ?? 3000);
+  application.server.listen(port, host, () => console.log(`ENTRA: http://${host}:${port}/login`));
 }

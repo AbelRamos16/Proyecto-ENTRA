@@ -318,7 +318,7 @@ export async function authController(
         sessionId &&
         await userModel.getSession(sessionId)
       ) {
-        return redirect(response, '/projects');
+        return redirect(response, '/feed');
       }
 
       const token = createCsrfToken();
@@ -442,7 +442,7 @@ export async function authController(
         `entra_login_csrf=; HttpOnly; Path=/login; SameSite=Strict; Max-Age=0${secure}`,
       ]);
 
-      return redirect(response, '/projects');
+      return redirect(response, '/feed');
     } catch (error) {
       console.error('Error durante el inicio de sesión:', error);
 
