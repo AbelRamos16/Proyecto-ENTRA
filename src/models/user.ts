@@ -49,7 +49,7 @@ export class UserModel {
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
       .select('id, username, role')
-      .eq('username', normalizedUsername)
+      .ilike('username', normalizedUsername.replace(/[\\%_]/g, character => '\\'+character))
       .maybeSingle();
 
     if (profileError) {

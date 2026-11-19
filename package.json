@@ -10,7 +10,8 @@
     "start": "node src/server.ts",
     "dev": "node --watch src/server.ts",
     "test": "node --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:local": "node --test tests/admin.test.ts tests/feed.test.ts tests/proposal.test.ts tests/community.test.ts"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

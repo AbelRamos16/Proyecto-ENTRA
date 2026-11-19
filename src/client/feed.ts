@@ -2,7 +2,7 @@
   const feedStream = document.querySelector<HTMLElement>('[data-feed-stream]');
   if (feedStream) {
     const stream = feedStream;
-    const ratios = new Map<HTMLElement, number>();
+    const reduceMotion=window.matchMedia("(prefers-reduced-motion: reduce)");
     const attached = new WeakSet<HTMLElement>();
     let active: HTMLElement | null = null;
     let currentIndex = 0;
@@ -19,10 +19,10 @@
       const all = cards();
       const previous = document.querySelector<HTMLButtonElement>('[data-feed-previous]');
       const next = document.querySelector<HTMLButtonElement>('[data-feed-next]');
-      if (previous) previous.disabled = !all.length || currentIndex===0 && !!active;
-      if (next) next.disabled = !all.length;
+      if (previous) previous.disabled = !all.length || currentIndex<0;
+      if (next) next.disabled = !all.length || currentIndex===all.length-1 && !stream.querySelector('[data-feed-more]');
       const counter = document.querySelector<HTMLElement>('[data-feed-counter]');
-      if (counter) counter.textContent = all.length ? String(currentIndex+1).padStart(2,'0')+' / '+String(all.length).padStart(2,'0') : '';
+      if (counter) counter.textContent = currentIndex<0 ? 'CREAR' : all.length ? String(currentIndex+1).padStart(2,'0')+' / '+String(all.length).padStart(2,'0') : '';
     }
     function sync(card: HTMLElement) {
       const audio = audioOf(card);
@@ -69,7 +69,11 @@
         if (candidate!==card) { audioOf(candidate).pause(); sync(candidate); }
       }
       active=card;
-      for (const candidate of cards()) candidate.classList.toggle('feed-card--active',candidate===card);
+      for (const candidate of cards()) {
+        candidate.classList.toggle('feed-card--active',candidate===card);
+        candidate.classList.toggle('feed-card--after',cards().indexOf(candidate)>cards().indexOf(card!));
+        candidate.inert=!!card && candidate!==card;
+      }
       if (card) {
         currentIndex=cards().indexOf(card);
         wantPlayback=soundEnabled;
@@ -83,11 +87,25 @@
       if (!audio.paused) { wantPlayback=false; soundEnabled=false; audio.pause(); sync(card); }
       else { soundEnabled=true; wantPlayback=true; start(card); }
     }
-    const observer=new IntersectionObserver(entries=>{
-      for (const entry of entries) ratios.set(entry.target as HTMLElement,entry.intersectionRatio);
-      const best=[...ratios].filter(([card])=>card.isConnected).sort((a,b)=>b[1]-a[1])[0];
-      select(best && best[1]>0.55 ? best[0] : null);
-    },{root:stream,threshold:[0,0.25,0.55,0.75,1]});
+    function nearest() {
+      const middle=stream.scrollLeft+stream.clientWidth/2;
+      const create=stream.querySelector<HTMLElement>('[data-feed-create]');
+      if(create && Math.abs(create.offsetLeft+create.offsetWidth/2-middle)<create.offsetWidth/2){select(null);currentIndex=-1;updateControls();return;}
+      const closest=cards().sort((a,b)=>Math.abs(a.offsetLeft+a.offsetWidth/2-middle)-Math.abs(b.offsetLeft+b.offsetWidth/2-middle))[0];
+      select(closest??null);
+    }
+    let scrollFrame=0;
+    stream.addEventListener('scroll',()=>{cancelAnimationFrame(scrollFrame);scrollFrame=requestAnimationFrame(nearest);},{passive:true});
+    stream.addEventListener('wheel',event=>{
+      if(event.ctrlKey || Math.abs(event.deltaX)>=Math.abs(event.deltaY))return;
+      const delta=event.deltaY*(event.deltaMode===1?24:event.deltaMode===2?stream.clientWidth:1);
+      if(delta<0&&stream.scrollLeft<=1 || delta>0&&stream.scrollLeft>=stream.scrollWidth-stream.clientWidth-1)return;
+      event.preventDefault();stream.scrollLeft+=delta;
+    },{passive:false});
+    window.addEventListener('resize',()=>{
+      if(active)stream.scrollTo({left:active.offsetLeft-(stream.clientWidth-active.offsetWidth)/2,behavior:'instant'});
+      nearest();
+    });
     function attach() {
       for (const card of cards()) {
         if (attached.has(card)) continue;
@@ -112,22 +130,22 @@
           if (card===active) wantPlayback=false;
           sync(card);
         });
-        observer.observe(card);
+
       }
       updateControls();
     }
     function move(direction: number) {
       const all=cards();
-      const index=active?all.indexOf(active):currentIndex+(direction<0?1:0);
-      const target=all[index+direction];
-      const top=target?.offsetTop ?? (direction>0 ? stream.scrollHeight : 0);
-      stream.scrollTo({top,behavior:'instant'});
+      const index=active?all.indexOf(active):currentIndex;
+      const target=index+direction<0?stream.querySelector<HTMLElement>('[data-feed-create]'):all[index+direction];
+      const left=target?target.offsetLeft-(stream.clientWidth-target.offsetWidth)/2:(direction>0?stream.scrollWidth:0);
+      stream.scrollTo({left,behavior:reduceMotion.matches?'instant':'smooth'});
     }
     document.querySelector('[data-feed-previous]')?.addEventListener('click',()=>move(-1));
     document.querySelector('[data-feed-next]')?.addEventListener('click',()=>move(1));
     stream.addEventListener('keydown',event=>{
       if ((event.target as HTMLElement).closest('button,a,input,textarea,select,[contenteditable]') || event.ctrlKey || event.metaKey || event.altKey) return;
-      if (['ArrowDown','PageDown','ArrowUp','PageUp'].includes(event.key)) {event.preventDefault();move(['ArrowDown','PageDown'].includes(event.key)?1:-1);}
+      if (['ArrowRight','ArrowLeft','ArrowDown','PageDown','ArrowUp','PageUp'].includes(event.key)) {event.preventDefault();move(['ArrowRight','ArrowDown','PageDown'].includes(event.key)?1:-1);}
       if (event.key===' ' && active) {event.preventDefault();toggle(active);}
     });
     function suspend() {
@@ -136,7 +154,8 @@
     }
     document.addEventListener('visibilitychange',()=>{if(document.hidden)suspend();});
     window.addEventListener('pagehide',suspend);
-    const endObserver=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)&&!loadFailed)void loadMore();},{root:stream,rootMargin:'0px 0px 200px 0px'});
+    document.addEventListener('proposal-open',suspend);
+    const endObserver=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)&&!loadFailed)void loadMore();},{root:stream,rootMargin:'0px 300px 0px 0px'});
     function watchEnd() {
       endObserver.disconnect();
       const end=stream.querySelector('[data-feed-end]');
@@ -151,7 +170,8 @@
       status.textContent='Cargando más ideas…';
       try {
         const cursor=new URL(link.href).searchParams.get('cursor')!;
-        const response=await fetch('/feed/page?cursor='+encodeURIComponent(cursor),{headers:{Accept:'application/json'}});
+        const requestUrl=new URL(link.href);requestUrl.pathname='/feed/page';
+        const response=await fetch(requestUrl.pathname+requestUrl.search,{headers:{Accept:'application/json'}});
         if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error();
         const page=await response.json() as {html:string;nextCursor:string|null};
         const template=document.createElement('template');template.innerHTML=page.html;
@@ -160,11 +180,11 @@
           if(!existing.has((node as HTMLElement).dataset.projectId))end.before(node);
         }
         if (page.nextCursor && page.nextCursor!==cursor) {
-          link.href='/feed?cursor='+encodeURIComponent(page.nextCursor); status.textContent='';
+          const nextUrl=new URL(link.href);nextUrl.searchParams.set('cursor',page.nextCursor);link.href=nextUrl.pathname+nextUrl.search; status.textContent='';
         } else {
           end.replaceChildren(Object.assign(document.createElement('p'),{textContent:'Ya escuchaste las últimas ideas.'}));
         }
-        loadFailed=false;attach();watchEnd();
+        loadFailed=false;attach();nearest();watchEnd();
       } catch {
         loadFailed=true;status.textContent='No se pudo cargar. Pulsa Cargar más para reintentar.';
       } finally {loading=false;}
@@ -173,6 +193,9 @@
       const link=(event.target as Element).closest('[data-feed-more]');
       if(link){event.preventDefault();loadFailed=false;void loadMore();}
     });
-    attach();watchEnd();
+    attach();
+    const first=cards()[0];
+    if(first)stream.scrollTo({left:first.offsetLeft-(stream.clientWidth-first.offsetWidth)/2,behavior:'instant'});
+    nearest();watchEnd();
   }
 }

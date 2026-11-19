@@ -39,6 +39,8 @@ export type ProjectInput = {
 export type Project = Omit<ProjectInput, 'audio'> & {
   id: number;
   publicationStatus?: 'draft' | 'published';
+  moderationHidden?:boolean;
+  moderationReason?:string;
   publishedAt?: string | null;
   ownerId: string;
   updatedAt: string;
@@ -47,6 +49,8 @@ export type Project = Omit<ProjectInput, 'audio'> & {
 };
 
 type ProjectRow = {
+  moderation_hidden?:boolean;
+  moderation_reason?:string;
   publication_status: 'draft' | 'published';
   published_at: string | null;
   genre_id: number | null;
@@ -201,6 +205,8 @@ function throwIfError(
 function mapProject(row: ProjectRow): Project {
   return {
     id: Number(row.id),
+    moderationHidden:row.moderation_hidden??false,
+    moderationReason:row.moderation_reason??'',
     publicationStatus: row.publication_status ?? 'draft',
     publishedAt: row.published_at,
     genreId: row.genre_id,
@@ -264,7 +270,7 @@ export class ProjectModel {
     let query = supabaseAdmin
       .from('projects')
       .select(
-        'publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
+        'moderation_hidden, moderation_reason, publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
       )
       .order('updated_at', { ascending: false });
 
@@ -293,7 +299,7 @@ export class ProjectModel {
     let query = supabaseAdmin
       .from('projects')
       .select(
-        'publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
+        'moderation_hidden, moderation_reason, publication_status, published_at, genre_id, instrument_id, collaboration_id, id, owner_id, title, genre, bpm, musical_key, need, description, status, updated_at, audio_name, audio_duration, hook_start, hook_end',
       )
       .eq('id', id);
 
