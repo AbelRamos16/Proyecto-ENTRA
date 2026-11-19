@@ -1,3 +1,4 @@
+import { catalogFields } from './catalog-fixture.ts';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -94,6 +95,7 @@ test(
       const bytes = Buffer.concat(Array(100).fill(frame));
 
       const fields: Record<string, string> = {
+        ...await catalogFields(),
         title: 'Demo con hook',
         genre: 'Indie',
         bpm: '120',

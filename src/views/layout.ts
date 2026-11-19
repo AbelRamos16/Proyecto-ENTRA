@@ -2,14 +2,15 @@ export const escapeHtml = (value: unknown): string => String(value ?? '').replac
 export const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`;
 
 export function layout(content: string, token: string, section = 'projects', role = '', bodyClass = ''): string {
+  const titles:Record<string,string>={admin:'Administración',feed:'Descubrir',projects:'Proyectos',profile:'Perfil del artista',library:'Biblioteca',notifications:'Notificaciones',proposals:'Propuestas'};
   return `<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${section === 'admin' ? 'Administración' : section === 'feed' ? 'Descubrir' : 'Proyectos'} · ENTRA</title>
+  <title>${titles[section]??'ENTRA'} · ENTRA</title>
   <link rel="icon" type="image/svg+xml" href="/brand/entra-isotipo.svg">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/community.css">
   ${section === 'feed' ? '<link rel="stylesheet" href="/feed.css">' : ''}
 </head>
 <body class="${escapeHtml(bodyClass)}">
@@ -21,6 +22,8 @@ export function layout(content: string, token: string, section = 'projects', rol
 
       <nav class="masthead__nav" aria-label="Principal"><a class="masthead__link ${section === 'feed' ? 'masthead__link--active' : ''}" href="/feed">Descubrir</a>
         <a class="masthead__link ${section === 'projects' ? 'masthead__link--active' : ''}" href="/projects">Mis proyectos</a>
+        <a class="masthead__link ${section === 'library' ? 'masthead__link--active' : ''}" href="/library">Biblioteca</a><a class="masthead__link ${section === 'profile' ? 'masthead__link--active' : ''}" href="/profile">Mi perfil</a><a class="masthead__link ${section === 'notifications' ? 'masthead__link--active' : ''}" href="/notifications">Avisos</a>
+        <a class="masthead__link ${section === 'proposals' ? 'masthead__link--active' : ''}" href="/proposals">Propuestas</a>
         ${role === 'superadmin' ? `<a class="masthead__link ${section === 'admin' ? 'masthead__link--active' : ''}" href="/admin">Administración</a>` : ''}
         <a class="masthead__create" href="/projects/new">
           ${icon}
@@ -54,7 +57,7 @@ export function layout(content: string, token: string, section = 'projects', rol
   <script type="module" src="/onboarding.js"></script>
   <script type="module" src="/project-audio.js"></script>
 <script src="/catalog-selects.js" defer></script>
-</body>
+<script type="module" src="/community.js"></script></body>
 </html>`;
 }
 

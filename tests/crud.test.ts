@@ -1,3 +1,4 @@
+import { catalogFields } from './catalog-fixture.ts';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -86,7 +87,7 @@ test('CRUD HTTP, validación, escape HTML, CSRF y persistencia', async () => {
     });
 
     assert.equal(loginResponse.status, 303);
-    assert.equal(loginResponse.headers.get('location'), '/projects');
+    assert.equal(loginResponse.headers.get('location'), '/feed');
 
     const setCookies = loginResponse.headers.getSetCookie();
     const sessionCookie = setCookies.find((cookie) =>
@@ -146,6 +147,7 @@ test('CRUD HTTP, validación, escape HTML, CSRF y persistencia', async () => {
     const token = tokenMatch[1];
 
     const fields = new URLSearchParams({
+      ...await catalogFields(),
       csrf: token,
       title: '<script>alert(1)</script>',
       genre: 'Indie',

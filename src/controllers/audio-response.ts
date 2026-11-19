@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-export function sendAudio(request: IncomingMessage, response: ServerResponse, bytes: Uint8Array): void {
+export function sendAudio(request: IncomingMessage, response: ServerResponse, bytes: Uint8Array, mime = 'audio/mpeg'): void {
     const rangeHeader = request.headers.range;
     const range = rangeHeader
       ? rangeHeader.match(/^bytes=(\d*)-(\d*)$/)
@@ -73,7 +73,7 @@ export function sendAudio(request: IncomingMessage, response: ServerResponse, by
     const content = bytes.subarray(start, end + 1);
 
     response.writeHead(partial ? 206 : 200, {
-      'Content-Type': 'audio/mpeg',
+      'Content-Type': mime,
       'Accept-Ranges': 'bytes',
       'Content-Length': content.length,
       ...(partial
